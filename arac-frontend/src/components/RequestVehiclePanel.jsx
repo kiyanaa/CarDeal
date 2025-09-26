@@ -84,7 +84,7 @@ const RequestVehiclePanel = () => {
           sahip: request.tahsisli || "havuz", // ✅ Token'dan alınan sahip bilgisi
           baslangic: request.baslangic,
           son: request.son,
-          yer: request.yer
+          yer: request.gidilecek_yer
         }),
       });
 

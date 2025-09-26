@@ -7,8 +7,8 @@ const AracList = React.memo(function AracList() {
   const [error, setError] = useState(null);
   const navigate = useNavigate();
 
-  // Token ve payload kontrolü güvenli hale getirildi
   const token = localStorage.getItem("token") || "";
+
   const getTokenPayload = (token) => {
     if (!token) return null;
     try {
@@ -17,42 +17,59 @@ const AracList = React.memo(function AracList() {
       return null;
     }
   };
+
   const payload = getTokenPayload(token);
-  const userPosition = payload?.position || "";
   const currentUser = payload?.username || "";
-  const canEdit = userPosition === "admin" || userPosition === "havuz";
+  const userPosition = payload?.position || "";
+  const canEdit = ["admin", "havuz"].includes(userPosition);
 
+  // Token ve payload kontrolü
   useEffect(() => {
-    const fetchVehicles = async () => {
-      try {
-        const response = await fetch("https://cardeal-vduj.onrender.com/araclar", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!response.ok) throw new Error("Veriler alınamadı");
-        const data = await response.json();
+  const fetchVehicles = async () => {
+    try {
+      const response = await fetch("https://cardeal-vduj.onrender.com/araclar", {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-        const sortedData = data.sort((a, b) => {
-          if (a.durum === "uygun" && b.durum !== "uygun") return -1;
-          if (a.durum !== "uygun" && b.durum === "uygun") return 1;
-          if (a.durum === "kullanımda" && b.durum !== "kullanımda") return -1;
-          if (a.durum !== "kullanımda" && b.durum === "kullanımda") return 1;
-          return 0;
-        });
-
-        setVehicles(sortedData);
-        setLoading(false);
-      } catch (err) {
-        setError(err.message);
-        setLoading(false);
+      if (!response.ok) {
+        throw new Error(
+          `Veriler alınamadı (status: ${response.status} ${response.statusText})`
+        );
       }
-    };
 
+      const data = await response.json();
+
+      const sortedData = data.sort((a, b) => {
+        if (a.durum === "uygun" && b.durum !== "uygun") return -1;
+        if (a.durum !== "uygun" && b.durum === "uygun") return 1;
+        if (a.durum === "kullanımda" && b.durum !== "kullanımda") return -1;
+        if (a.durum !== "kullanımda" && b.durum === "kullanımda") return 1;
+        return 0;
+      });
+
+      setVehicles(sortedData);
+      setLoading(false);
+    } catch (err) {
+      console.error("Araç listesi hata:", err);
+      setError(err.message);
+      setLoading(false);
+    }
+  };
+
+  if (token) {
     fetchVehicles();
-  }, [token]);
+  } else {
+    console.warn("⚠️ Token bulunamadı, araçlar çekilemedi.");
+    setLoading(false);
+  }
+}, [token, payload, navigate]);
 
   const handleDeleteVehicle = async (plaka) => {
     if (!window.confirm(`Aracı silmek istediğinize emin misiniz? Plaka: ${plaka}`)) return;
-
     try {
       const response = await fetch(`https://cardeal-vduj.onrender.com/araclar/${plaka}`, {
         method: "DELETE",
@@ -101,7 +118,7 @@ const AracList = React.memo(function AracList() {
   const handleRequestVehicle = (plaka) => navigate("/requestvehicle", { state: { plaka } });
   const handleAddVehicle = () => navigate("/addvehicle");
   const handleReleaseVehicle = (plaka) => navigate("/releasevehicle", { state: { plaka } });
-  const handlereserved = (plaka) => navigate("/reserve", { state: { plaka } });
+  const handlereserved = (plaka) => navigate("/createreserve", { state: { plaka } });
 
   if (loading) return <div className="text-center text-gray-500">Veriler yükleniyor...</div>;
   if (error) return <div className="text-center text-red-500">Hata: {error}</div>;
@@ -141,7 +158,7 @@ const AracList = React.memo(function AracList() {
                 ["admin", "havuz"].includes(userPosition);
 
               const canTake =
-                (a.tahsisli === currentUser && a.durum === "kullanımda") ||
+                (a.tahsisli === currentUser && a.durum === "uygun") ||
                 ["admin", "havuz"].includes(userPosition);
 
               return (
@@ -190,7 +207,7 @@ const AracList = React.memo(function AracList() {
                         className="px-2 py-1 bg-yellow-600 text-white rounded text-xs hover:bg-yellow-700 ml-2"
                         onClick={() => handlereserved(a.plaka)}
                       >
-                        Aracı İste
+                        Aracı Rezerve Et
                       </button>
                     )}
 
@@ -219,7 +236,7 @@ const AracList = React.memo(function AracList() {
         </tbody>
       </table>
 
-      <div className="fixed bottom-4 right-4">
+      <div className="fixed bottom-4 right-4 flex">
         <button
           onClick={handleAddVehicle}
           className="flex items-center justify-center px-4 py-2 bg-green-600 text-white rounded-full hover:bg-green-700 text-sm"

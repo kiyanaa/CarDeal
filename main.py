@@ -84,6 +84,43 @@ class HareketDB(Base):
     son = Column(String, default = "Bilgi yok")
     neden = Column(String, default = "İş")
 
+class ReserveDB(Base):
+    __tablename__ = "Rzervasyonlar"
+    id = Column(Integer, primary_key=True, index=True)
+    marka = Column(String, nullable=True)
+    model = Column(String, nullable=True)
+    yil = Column(String, nullable=True)
+    renk = Column(String, nullable=True)
+    plaka = Column(String)
+    kullanan = Column(String, index=True)
+    sahip =Column(String, index=True)
+    yer = Column(String)
+    gidilecek_yer = Column(String)
+    baslangic = Column(String)
+    son = Column(String, default="Belli değil")
+    neden = Column(String, default="Yok")
+    aciliyet = Column(String, default="Yok")
+
+class ReserveOnayDB(Base):
+    __tablename__ = "approved_reservations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    marka = Column(String, nullable=False)
+    model = Column(String, nullable=False)
+    yil = Column(String, nullable=False)
+    renk = Column(String, nullable=False)
+    plaka = Column(String, nullable=False)
+    kullanan = Column(String, nullable=False)
+    sahip = Column(String, nullable=True)
+    yer = Column(String, nullable=True)
+    gidilecek_yer = Column(String, nullable=True)
+    baslangic = Column(String, nullable=False)
+    son = Column(String, nullable=False)
+    neden = Column(String, nullable=True)
+    aciliyet = Column(String, nullable=True)
+    onaylayan = Column(String, nullable=False)  # kim onayladı
+    onay_tarihi = Column(DateTime, default=datetime.datetime.utcnow)
+
 
 class IstekAracDB(Base):
     __tablename__ = "istek_arac"
@@ -248,6 +285,21 @@ class AracCreate(BaseModel):
     renk: Optional[str] = None
     plaka: str
     yer: str
+    kullanan: Optional[str] = None
+    baslangic: Optional[str] = None
+    son: Optional[str] = None
+    durum: Optional[str] = "uygun"
+    tahsis: bool = False
+    tahsisli: Optional[str] = None
+
+class ReserveCrate(BaseModel):
+    marka: Optional[str] = None
+    model: Optional[str] = None
+    yil: Optional[str] = None
+    renk: Optional[str] = None
+    plaka: str
+    yer: str
+    gidilecek_yer: str
     kullanan: Optional[str] = None
     baslangic: Optional[str] = None
     son: Optional[str] = None
@@ -450,7 +502,6 @@ def arac_iade(model: IadeModel, db: Session = Depends(get_db), current_user: Use
     if not arac:
         raise HTTPException(status_code=404, detail="Araç bulunamadı")
 
-    # Sadece aracı kullanan, havuz veya admin iade edebilir
     pozisyon = position_check(current_user)
     if arac.kullanan != current_user.username and pozisyon <= 2 and arac.tahsisli != current_user.username:
         raise HTTPException(status_code=403, detail="Bu aracı iade etme yetkiniz yok")
@@ -468,18 +519,47 @@ def arac_iade(model: IadeModel, db: Session = Depends(get_db), current_user: Use
     db.commit()
     db.refresh(yeni_hareket)
 
-    # Aracı iade et
-    arac.durum = "uygun"
-    arac.kullanan = None
-    arac.yer = model.yer
-    arac.baslangic = None
-    arac.son = model.son
-    arac.neden = model.neden
+    # ---- Durum kontrol ----
+    if arac.durum == "kullanımda":
+        # 1. Kullanımda ise uyguna çek + rezervasyonları sil
+        arac.durum = "uygun"
+        arac.kullanan = None
+        arac.yer = model.yer
+        arac.baslangic = None
+        arac.son = model.son
+        arac.neden = model.neden
+
+        db.query(ReserveDB).filter(ReserveDB.plaka == arac.plaka).delete()
+
+    elif arac.durum == "rezerve":
+        # 2. Rezerve ise önce onaylı rezervasyon var mı bak
+        onayli = db.query(ReserveOnayDB).filter(ReserveOnayDB.plaka == arac.plaka).first()
+
+        if onayli:
+            # Onaylı rezervasyon var → kullanımda yap
+            arac.durum = "kullanımda"
+            arac.kullanan = onayli.kullanan
+            arac.yer = onayli.gidilecek_yer
+            arac.baslangic = onayli.baslangic
+            arac.son = onayli.son
+            arac.neden = "Rezervasyon devralındı"
+        else:
+            # Onaylı yok → uyguna çek
+            arac.durum = "uygun"
+            arac.kullanan = None
+            arac.yer = model.yer
+            arac.baslangic = None
+            arac.son = model.son
+            arac.neden = model.neden
+
+        # Tüm rezervasyonları sil
+        db.query(ReserveDB).filter(ReserveDB.plaka == arac.plaka).delete()
 
     db.commit()
     db.refresh(arac)
 
-    return {"status": "Araç iade edildi", "arac": jsonable_encoder(arac)}
+    return {"status": "Araç iade işlemi tamamlandı", "arac": jsonable_encoder(arac)}
+
 
 
 # ----- 9.Araç Ekle --------
@@ -772,3 +852,166 @@ def change_password(
     return {"status": "Parola başarıyla değiştirildi", "user": user.username}
 
 
+# ----- 21.Rezervasyon listele -----
+
+@app.get("/reservations")
+def get_reservations(db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user) ):
+    if position_check(current_user) >= 3:
+        return db.query(ReserveDB).all()
+    elif position_check(current_user) == 2:
+        tahsisli_arac = db.query(AracDB).filter(AracDB.tahsisli== current_user.username).first()
+        if not tahsisli_arac:
+            return db.query(ReserveDB).filter(ReserveDB.kullanan == current_user.username).first()
+        tahsis_plaka = tahsisli_arac.plaka
+        istek_araclar = db.query(ReserveDB).all()
+        donus = [
+            istek_arac
+            for istek_arac in istek_araclar
+            if istek_arac.plaka == tahsis_plaka or istek_arac.kullanan == current_user.username
+        ]
+        return donus
+
+            
+    elif position_check(current_user) == 1:
+        return db.query(ReserveDB).filter(ReserveDB.kullanan == current_user.username).all()
+    else:
+        raise HTTPException(status_code=404, detail="Kullanıcının yetkisi dışında.")
+
+
+# ----- 22.Rezerve Et -----
+
+@app.put("/reserve_et/{plaka}")
+def reserve_et(plaka: str, model: ReserveCrate, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
+    
+    # Kullanıcının adı ve plaka için mevcut rezervasyon
+    if position_check(current_user) >= 2:
+        kullanan = model.kullanan
+    elif position_check(current_user) == 1:
+        kullanan = current_user.username
+    else:
+        raise HTTPException(status_code=403, detail="Kullanıcının yetkisi dışında.")
+
+    mevcut = db.query(ReserveDB).filter(
+        ReserveDB.kullanan == kullanan,
+        ReserveDB.plaka == plaka
+    ).first()
+
+    if mevcut:
+        return {"status": "Bu kullanıcı ve araç için rezervasyon zaten mevcut.", "rezervasyon": jsonable_encoder(mevcut)}
+
+    arac = db.query(AracDB).filter(AracDB.plaka == plaka).first()
+    if not arac:
+        raise HTTPException(status_code=404, detail="Araç bulunamadı")
+
+    yeni_reserve = ReserveDB(
+        marka=model.marka,
+        model=model.model,
+        yil=model.yil,
+        renk=model.renk,
+        plaka=plaka,
+        kullanan=kullanan,
+        sahip=model.sahip,
+        yer=model.yer,
+        gidilecek_yer=model.gidilecek_yer,
+        baslangic=model.baslangic,
+        son=model.son,
+        neden=model.neden,
+        aciliyet=model.aciliyet
+    )
+
+    db.add(yeni_reserve)
+    db.commit()
+    db.refresh(yeni_reserve)
+
+    return {"status": "Rezervasyon oluşturuldu", "rezervasyon": jsonable_encoder(yeni_reserve)}
+
+
+# ----- 23.Rezervasyon sil -----
+@app.delete("/rezerve_sil")
+def del_reservation(
+    plaka: str = Query(None),
+    kullanan: str = Query(None),
+    body: dict = Body(None),
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    # Eğer query parametreleri boşsa, body'den al
+    if body:
+        plaka = plaka or body.get("plaka")
+        kullanan = kullanan or body.get("kullanan")
+    
+    if not kullanan or not plaka:
+        raise HTTPException(status_code=400, detail="Silmek için kullanan ve plaka belirtilmeli")
+    
+    if position_check(current_user) >= 2 or (position_check(current_user) == 1 and kullanan == current_user.username):
+        pass
+    else:
+        raise HTTPException(status_code=403, detail="Bu rezervasyonu silme yetkiniz yok")
+
+    reservation = db.query(ReserveDB).filter(
+        ReserveDB.kullanan == kullanan,
+        ReserveDB.plaka == plaka
+    ).first()
+
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Rezervasyon bulunamadı")
+
+    db.delete(reservation)
+    db.commit()
+    return {"status": "Rezervasyon silindi", "kullanan": kullanan, "plaka": plaka}
+
+
+@app.post("/reservations/approve/{reservation_id}")
+def approve_reservation(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    # Rezervasyonu bul
+    reservation = db.query(ReserveDB).filter(ReserveDB.id == reservation_id).first()
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Rezervasyon bulunamadı")
+
+    # Onay kuralları
+    if reservation.sahip == "havuz":
+        if position_check(current_user) < 3:
+            raise HTTPException(status_code=403, detail="Bu rezervasyonu onaylama yetkiniz yok (havuz için en az seviye 3 gerekir)")
+    else:
+        if not (current_user.username == reservation.sahip or position_check(current_user) >= 4):
+            raise HTTPException(status_code=403, detail="Bu rezervasyonu yalnızca sahibi veya seviye 4 üzeri onaylayabilir")
+
+    # Aracı güncelle → rezerve duruma çek
+    arac = db.query(AracDB).filter(AracDB.plaka == reservation.plaka).first()
+    if arac:
+        arac.durum = "rezerve"
+        db.add(arac)
+
+    # Onaylı rezervasyon tablosuna ekle
+    approved = ReserveOnayDB(
+        marka=reservation.marka,
+        model=reservation.model,
+        yil=reservation.yil,
+        renk=reservation.renk,
+        plaka=reservation.plaka,
+        kullanan=reservation.kullanan,
+        sahip=reservation.sahip,
+        yer=reservation.yer,
+        gidilecek_yer=reservation.gidilecek_yer,
+        baslangic=reservation.baslangic,
+        son=reservation.son,
+        neden=reservation.neden,
+        aciliyet=reservation.aciliyet,
+        onaylayan=current_user.username
+    )
+    db.add(approved)
+
+    # Aynı araca ait tüm rezervasyonları sil
+    db.query(ReserveDB).filter(ReserveDB.plaka == reservation.plaka).delete()
+
+    db.commit()
+    db.refresh(approved)
+
+    return {
+        "status": f"{reservation.plaka} plakalı aracın rezervasyonu onaylandı ve araç rezerve duruma alındı.",
+        "onay": jsonable_encoder(approved)
+    }
