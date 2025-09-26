@@ -102,14 +102,6 @@ const Menu = () => {
           <LogOut className="w-5 h-5 text-red-600" />
           <span className="text-sm font-medium text-red-700">Logout</span>
         </button>
-
-        <button
-          onClick={() => navigate("/register")}
-          className="flex items-center gap-2 px-4 py-2 bg-white shadow-md rounded-lg hover:bg-gray-50"
-        >
-          <UserPlus className="w-5 h-5 text-red-600" />
-          <span className="text-sm font-medium text-red-700">Register</span>
-        </button>
       </div>
     </div>
   );
